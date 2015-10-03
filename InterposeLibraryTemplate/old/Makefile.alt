@@ -1,0 +1,61 @@
+# Alternate Makefile that allows us to use low-level llvm tools to build
+# step-by-step.  One of the steps generates LLVM intermediate language
+# assembly files (ending in *.ii), which support calling conventions
+# that aren't supported in C/C++ files, but which sometimes get used by
+# clang for internal (non-public) functions -- for example fastcc or
+# coldcc.
+#
+# http://llvm.org/docs/LangRef.html#calling-conventions
+#
+# Once the first build is finished, you can edit an *.ii file to make it
+# support the appropriate calling convention, then call "make" again to
+# build from that point.  This is easier if you put __attribute__ labels
+# in C/C++ code that indicate a supported (but inappropriate) calling
+# convention -- for example fastcall (or x86_fastcallcc as it's called in
+# LLVM code).  Then you need only replace these in the *.ii file with
+# strings that indicate the correct calling convention (for example you
+# could replace all instances of x86_fastcallcc with fastcc).
+
+LLVM_HOME=/usr/local/src/llvm/llvm-185949
+CLANG=$(LLVM_HOME)/build/bin/clang++
+LLAS=$(LLVM_HOME)/build/bin/llvm-as
+LLC=$(LLVM_HOME)/build/bin/llc
+LIPO=lipo
+
+interpose.dylib : interpose.o
+	$(CLANG) -arch i386 -arch x86_64 -o interpose.dylib interpose.o \
+		-Wl,-read_only_relocs,suppress \
+		-lobjc -framework Cocoa -framework Carbon -dynamiclib
+
+interpose.o : interpose-i386.o interpose-x86_64.o
+	$(LIPO) -create -arch i386 interpose-i386.o -arch x86_64 interpose-x86_64.o \
+		-output interpose.o
+
+interpose-x86_64.o : interpose-x86_64.s
+	$(CLANG) -arch x86_64 -o interpose-x86_64.o -c interpose-x86_64.s
+
+interpose-i386.o : interpose-i386.s
+	$(CLANG) -arch i386 -o interpose-i386.o -c interpose-i386.s
+
+interpose-x86_64.s : interpose-x86_64.bc
+	$(LLC) interpose-x86_64.bc -o interpose-x86_64.s
+
+interpose-i386.s : interpose-i386.bc
+	$(LLC) interpose-i386.bc -o interpose-i386.s
+
+interpose-x86_64.bc : interpose-x86_64.ii
+	$(LLAS) -o=interpose-x86_64.bc interpose-x86_64.ii
+
+interpose-i386.bc : interpose-i386.ii
+	$(LLAS) -o=interpose-i386.bc interpose-i386.ii
+
+interpose-x86_64.ii : interpose.mm
+	$(CLANG) -arch x86_64 -S -emit-llvm -o interpose-x86_64.ii \
+		-Wno-deprecated-declarations -c interpose.mm
+
+interpose-i386.ii : interpose.mm
+	$(CLANG) -arch i386 -S -emit-llvm -o interpose-i386.ii \
+		-Wno-deprecated-declarations -c interpose.mm
+
+clean :
+	rm interpose.o interpose.dylib interpose-i386* interpose-x86_64*
